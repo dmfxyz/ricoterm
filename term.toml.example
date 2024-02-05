@@ -1,0 +1,23 @@
+[rpc]
+arb_rpc_url = "https://arb1.arbitrum.io/rpc"
+
+[urns]
+user_address = "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"
+user_nickname = "vitalik"
+ilks = ["weth", "usdc"]
+
+[ilks]
+[ilks.key_mappings]
+a = 'arb'
+d = 'dai'
+l = 'link'
+r = 'reth'
+u = 'usdc'
+b = 'wbtc'
+w = 'weth'
+h = 'wsteth'
+n = ':uninft'
+
+[rico]
+diamond = "0x598C6c1cd9459F882530FC9D7dA438CB74C6CB3b"
+feedbase = "0xa84F3ad46f6Fa8D09B52EbC61f1C25aeF33231F8"

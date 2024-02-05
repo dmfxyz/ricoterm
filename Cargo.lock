@@ -2434,8 +2434,10 @@ dependencies = [
  "ethers",
  "ricolib",
  "serde",
+ "serde_derive",
  "serde_json",
  "tokio",
+ "toml",
  "tui",
 ]
 

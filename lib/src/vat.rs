@@ -5,26 +5,26 @@ use std::sync::Arc;
 use crate::utils::string_to_bytes32;
 
 pub struct Ilk {
-    _tart: U256,
+    pub tart: U256,
     pub rack: U256,
-    _line: U256,
-    _dust: U256,
-    _fee: U256,
-    _rho: U256,
-    _chop: U256,
-    _hook: Address,
+    pub line: U256,
+    pub dust: U256,
+    pub fee: U256,
+    pub rho: U256,
+    pub chop: U256,
+    pub hook: Address,
 }
 impl From<(U256, U256, U256, U256, U256, U256, U256, Address)> for Ilk {
     fn from(data: (U256, U256, U256, U256, U256, U256, U256, Address)) -> Self {
         Ilk {
-            _tart: data.0,
+            tart: data.0,
             rack: data.1,
-            _line: data.2,
-            _dust: data.3,
-            _fee: data.4,
-            _rho: data.5,
-            _chop: data.6,
-            _hook: data.7,
+            line: data.2,
+            dust: data.3,
+            fee: data.4,
+            rho: data.5,
+            chop: data.6,
+            hook: data.7,
         }
     }
 }

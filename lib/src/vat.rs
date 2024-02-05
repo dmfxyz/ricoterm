@@ -1,9 +1,33 @@
 use ethers::{abi::Abi, contract::Contract, prelude::*, types::Address};
 use serde_json::from_str;
-use std::{fs::File, io::Read, sync::Arc};
+use std::sync::Arc;
 
-use crate::{utils::string_to_bytes32, Ilk};
+use crate::utils::string_to_bytes32;
 
+pub struct Ilk {
+    _tart: U256,
+    pub rack: U256,
+    _line: U256,
+    _dust: U256,
+    _fee: U256,
+    _rho: U256,
+    _chop: U256,
+    _hook: Address,
+}
+impl From<(U256, U256, U256, U256, U256, U256, U256, Address)> for Ilk {
+    fn from(data: (U256, U256, U256, U256, U256, U256, U256, Address)) -> Self {
+        Ilk {
+            _tart: data.0,
+            rack: data.1,
+            _line: data.2,
+            _dust: data.3,
+            _fee: data.4,
+            _rho: data.5,
+            _chop: data.6,
+            _hook: data.7,
+        }
+    }
+}
 pub struct Vat<T: Middleware + Clone> {
     pub address: Address,
     contract: Contract<T>,
@@ -11,10 +35,8 @@ pub struct Vat<T: Middleware + Clone> {
 
 impl<T: Middleware + Clone> Vat<T> {
     pub fn new(provider: &Arc<T>, address: Address) -> Self {
-        let mut file = File::open("./abi/vat.json").unwrap();
-        let mut contents = String::new();
-        file.read_to_string(&mut contents).unwrap();
-        let abi = from_str::<Abi>(&contents).unwrap();
+        let file = include_str!("../abi/vat.json");
+        let abi = from_str::<Abi>(file).unwrap();
 
         let contract = Contract::new(address, abi, Arc::clone(provider));
 

@@ -2413,12 +2413,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "ricolib"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "crossterm 0.27.0",
+ "ethers",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tui",
+]
+
+[[package]]
 name = "ricors"
 version = "0.1.0"
 dependencies = [
  "chrono",
  "crossterm 0.27.0",
  "ethers",
+ "ricolib",
  "serde",
  "serde_json",
  "tokio",

@@ -1,4 +1,4 @@
-use std::{fs::File, io::Read, sync::Arc};
+use std::sync::Arc;
 
 use ethers::{
     abi::{Abi, Address},
@@ -15,10 +15,8 @@ pub struct Vox<T: Middleware + Clone> {
 
 impl<T: Middleware + Clone> Vox<T> {
     pub fn new(provider: &Arc<T>, address: Address) -> Self {
-        let mut file = File::open("./abi/vox.json").unwrap();
-        let mut contents = String::new();
-        file.read_to_string(&mut contents).unwrap();
-        let abi = from_str::<Abi>(&contents).unwrap();
+        let file = include_str!("../abi/vox.json");
+        let abi = from_str::<Abi>(file).unwrap();
 
         let contract = Contract::new(address, abi, Arc::clone(provider));
 

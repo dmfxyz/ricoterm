@@ -10,6 +10,7 @@ use tui::{
 use crate::urn::UrnData;
 
 pub fn paint_urn(urn: &UrnData) -> Paragraph {
+    let units = units::new();
     let ink = match &urn.ninks {
         Some(ninks) => ninks
             .iter()
@@ -26,8 +27,9 @@ pub fn paint_urn(urn: &UrnData) -> Paragraph {
         ),
     };
     let urn_text = format!(
-        "art: {}\n\tink: {} \nloan: {} \nvalue: {}\nsafety: {}",
+        "art:   {}\ndebt:  {}\n\tink:   {} \nloan/value: {:.12} / {:.12} --> safety: {:.5}",
         urn.art.low_u64() as f64 / 10_u64.pow(18) as f64,
+        (urn.debt.as_u128() as f64 / 10_u64.pow(18) as f64),
         ink,
         (urn.loan.as_u128() as f64 / 10_u64.pow(18) as f64),
         (urn.value.as_u128() as f64 / 10_u64.pow(18) as f64),

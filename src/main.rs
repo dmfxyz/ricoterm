@@ -82,10 +82,13 @@ async fn fetch_all_urn_data_for_ilk<T: Middleware + Clone>(
         _ => (units.BLN * value / loan).as_u128() as f64 / units.BLN_F64,
     };
 
+    let debt = art * syn_rack * units.BLN / units.RAY / units.BLN;
+
     UrnData {
         ink_name: String::from(ilk),
         ink,
         art,
+        debt,
         loan,
         value,
         safety,
@@ -204,7 +207,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     Err(e) => println!("Error fetching data: {}", e),
                 }
-                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
             }
         });
     });

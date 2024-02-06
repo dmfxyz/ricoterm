@@ -31,6 +31,8 @@ pub struct UrnsConfig {
 pub struct Rico {
     pub diamond: String,
     pub feedbase: String,
+    pub npfm: String,
+    pub uniwrapper: String,
 }
 
 pub fn read_config<T: AsRef<Path>>(path: T) -> Result<TermConfig, Box<dyn std::error::Error>> {

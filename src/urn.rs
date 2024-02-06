@@ -6,6 +6,7 @@ use ethers::types::U256;
 pub struct UrnData {
     pub ink_name: String,
     pub ink: U256,
+    pub ninks: Option<Vec<U256>>,
     pub art: U256,
     pub loan: U256,
     pub value: U256,
@@ -21,6 +22,7 @@ impl UrnData {
             loan: U256::zero(),
             value: U256::zero(),
             safety: 0.0,
+            ninks: None,
         }
     }
 }

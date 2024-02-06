@@ -36,7 +36,7 @@ pub struct Vat<T: Middleware + Clone> {
 
 impl<T: Middleware + Clone> Vat<T> {
     pub fn new(provider: &Arc<T>, address: Address) -> Self {
-        let file = include_str!("../abi/vat.json");
+        let file = include_str!("./abi/vat.json");
         let abi = from_str::<Abi>(file).unwrap();
 
         let contract = Contract::new(address, abi, Arc::clone(provider));

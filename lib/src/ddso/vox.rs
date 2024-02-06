@@ -15,7 +15,7 @@ pub struct Vox<T: Middleware + Clone> {
 
 impl<T: Middleware + Clone> Vox<T> {
     pub fn new(provider: &Arc<T>, address: Address) -> Self {
-        let file = include_str!("../abi/vox.json");
+        let file = include_str!("./abi/vox.json");
         let abi = from_str::<Abi>(file).unwrap();
 
         let contract = Contract::new(address, abi, Arc::clone(provider));

@@ -1,4 +1,5 @@
 mod config;
+mod monet;
 mod urn;
 use chrono::NaiveDateTime;
 use crossterm::{
@@ -8,9 +9,12 @@ use crossterm::{
 };
 use ethers::prelude::*;
 use ethers::types::U256;
-use ricolib::{feedbase::Feedbase, math::units, nfpm::NPFM, uniwrapper::UniWrapper, vat::*};
+use ricolib::{
+    ddso::{feedbase::Feedbase, nfpm::NPFM, uniwrapper::UniWrapper, vat::*, vox::*},
+    math::units,
+    valuation::Valuer,
+};
 use std::{
-    cmp::max,
     collections::HashMap,
     convert::TryFrom,
     io,
@@ -21,7 +25,6 @@ use std::{
 use tui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
-    text::{Span, Spans, Text},
     widgets::{Block, Borders, Paragraph},
     Terminal,
 };
@@ -29,65 +32,6 @@ use urn::UrnData;
 
 use tui::style::Modifier;
 use tui::style::Style;
-
-use ricolib::vox::Vox;
-
-async fn value_uni_nft<T: Middleware + Clone>(
-    token_id: &U256,
-    npfm: &NPFM<T>,
-    vat: &Vat<T>,
-    feedbase: &Feedbase<T>,
-    uniwrapper: &UniWrapper<T>,
-) -> U256 {
-    let position = npfm.positions(*token_id).await;
-    let token_0_xs = {
-        let mut bytes = [0u8; 32]; 
-        bytes[0..20].copy_from_slice(position.token0.as_bytes());
-        H256::from(bytes)
-    };
-    let t0_info: (Address, H256, U256) = (
-        Address::from_slice(
-            &vat.geth::<H256>(":uninft", "src", vec![token_0_xs])
-                .await
-                .as_bytes()[0..20],
-        ),
-        vat.geth(":uninft", "tag", vec![token_0_xs]).await,
-        vat.geth::<RU256>(":uninft", "liqr", vec![token_0_xs])
-            .await
-            .into(),
-    );
-
-    let token_1_xs = {
-        let mut bytes = [0u8; 32];
-        bytes[0..20].copy_from_slice(position.token1.as_bytes());
-        H256::from(bytes) // Con
-    };
-    let t1_info: (Address, H256, U256) = (
-        Address::from_slice(
-            &vat.geth::<H256>(":uninft", "src", vec![token_1_xs])
-                .await
-                .as_bytes()[0..20],
-        ),
-        vat.geth(":uninft", "tag", vec![token_1_xs]).await,
-        vat.geth::<RU256>(":uninft", "liqr", vec![token_1_xs])
-            .await
-            .into(),
-    );
-
-    let t1_price_256: U256 =
-        U256::from_big_endian(feedbase.pull(t1_info.0, t1_info.1).await.0.as_bytes());
-    let t0_price_256: U256 =
-        U256::from_big_endian(feedbase.pull(t0_info.0, t0_info.1).await.0.as_bytes());
-    let t1_price: U512 = t1_price_256.try_into().unwrap();
-    let t0_price: U512 = t0_price_256.try_into().unwrap();
-    let scaled_t1_price: U512 = t1_price * U512::from(units::new().X96);
-    let scaled_ration = scaled_t1_price * U512::from(units::new().X96) / t0_price;
-    let price_256 = U256::try_from(scaled_ration.integer_sqrt()).unwrap();
-    let total = uniwrapper.total(npfm.address, *token_id, price_256).await;
-    let liqr = max(t0_info.2, t1_info.2);
-    let value: U256 = (total.0 * t0_price_256 + total.1 * t1_price_256) / liqr;
-    value
-}
 
 async fn fetch_all_urn_data_for_ilk<T: Middleware + Clone>(
     ilk: &str,
@@ -97,7 +41,10 @@ async fn fetch_all_urn_data_for_ilk<T: Middleware + Clone>(
     uniwrapper: &UniWrapper<T>,
     wallet_address: Address,
 ) -> UrnData {
+    let units = units::new();
+    let valuer = Valuer::new(npfm, vat, feedbase, uniwrapper);
     let par = vat.par().await;
+    let mut ninks = Option::<Vec<U256>>::None;
     let ink: U256 = match ilk.eq(":uninft") {
         false => vat
             .ink(ilk, wallet_address)
@@ -107,33 +54,32 @@ async fn fetch_all_urn_data_for_ilk<T: Middleware + Clone>(
             .to_owned(),
         true => {
             let ink = vat.ink(ilk, wallet_address).await;
+            let mut _ninks = Vec::<U256>::new();
             let mut total_ink = U256::zero();
             for token in ink {
-                total_ink += value_uni_nft(&token, npfm, vat, feedbase, uniwrapper).await;
+                total_ink += valuer.value_uni_nft(&token).await;
+                _ninks.push(token);
             }
+            ninks = Some(_ninks);
             total_ink
         }
     };
     let art: U256 = vat.urns(ilk, wallet_address).await;
     let ililk: Ilk = vat.ilks(ilk).await;
-    let loan = art * ililk.rack * par / U256::from(10_u128.pow(27)) / U256::from(10_u128.pow(27));
+    let seconds_since_last_drip: i64 = (chrono::Utc::now().naive_utc()
+        - NaiveDateTime::from_timestamp_opt(ililk.rho.as_u128() as i64, 0).unwrap())
+    .num_seconds();
+    let syn_rack =
+        (0..seconds_since_last_drip).fold(ililk.rack, |acc, _| acc * ililk.fee / units.RAY);
+    let loan = art * syn_rack * par / units.RAY / units.RAY;
     let value = match ilk {
         ":uninft" => ink,
-        _ => {
-            let liqr: U256 = vat.geth::<RU256>(ilk, "liqr", Vec::new()).await.into();
-            let src: Address = Address::from_slice(
-                &vat.geth::<H256>(ilk, "src", Vec::new()).await.as_bytes()[0..20],
-            );
-            let tag: H256 = vat.geth::<H256>(ilk, "tag", Vec::new()).await;
-            let rfeed: H256 = feedbase.pull(src, tag).await.0;
-            let feed: U256 = U256::from_big_endian(rfeed.as_bytes());
-            feed * ink / liqr
-        }
+        _ => valuer.value_gem(ilk, &ink).await,
     };
 
     let safety = match loan.cmp(&U256::zero()) {
         std::cmp::Ordering::Equal => 0.0,
-        _ => (U256::from(10_u128.pow(9)) * value / loan).as_u128() as f64 / 10_u128.pow(9) as f64,
+        _ => (units.BLN * value / loan).as_u128() as f64 / units.BLN_F64,
     };
 
     UrnData {
@@ -143,6 +89,7 @@ async fn fetch_all_urn_data_for_ilk<T: Middleware + Clone>(
         loan,
         value,
         safety,
+        ninks,
     }
 }
 
@@ -209,7 +156,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let npfm = NPFM::new(&provider, config.rico.npfm.parse()?);
     let uniwrapper = UniWrapper::new(&provider, config.rico.uniwrapper.parse()?);
     let wallet_address: Address = config.urns.user_address.parse()?;
-    let units = units::new();
     let (tx, rx) = mpsc::channel();
     let mut empty_urn_vec = Vec::<UrnData>::new();
     for urn in config.urns.ilks.iter() {
@@ -283,13 +229,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let top_chunks = Layout::default()
                 .direction(Direction::Horizontal)
-                .constraints(
-                    [
-                        Constraint::Percentage(50),
-                        Constraint::Percentage(50),
-                    ]
-                    .as_ref(),
-                )
+                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
                 .split(chunks[0]);
 
             let main_chunks = Layout::default()
@@ -304,8 +244,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .split(chunks[1]);
 
             // dynamically allocate space for each urn
-            let display_space_per_urn =100 / config.urns.ilks.len() as u16;
-            let urn_display_constraints = config.urns.ilks.iter().map(|_| Constraint::Percentage(display_space_per_urn)).collect::<Vec<Constraint>>();
+            let display_space_per_urn = 100 / config.urns.ilks.len() as u16;
+            let urn_display_constraints = config
+                .urns
+                .ilks
+                .iter()
+                .map(|_| Constraint::Percentage(display_space_per_urn))
+                .collect::<Vec<Constraint>>();
             let urn_views = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints(urn_display_constraints.as_ref())
@@ -314,9 +259,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Populate top section with title
             let title = Paragraph::new(match &config.urns.user_nickname {
                 Some(nickname) => format!("{}'s urns", nickname),
-                None => format!("{}'s urns", &config.urns.user_address)
+                None => format!("{}'s urns", &config.urns.user_address),
             })
-                .style(Style::default().add_modifier(Modifier::BOLD)); // Optional: Add styling as needed
+            .style(Style::default().add_modifier(Modifier::BOLD)); // Optional: Add styling as needed
             f.render_widget(title, top_chunks[0]);
             // Grab data from the data mutex and start populating
             let data = data.lock().unwrap();
@@ -325,104 +270,55 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let par = data.1;
 
             // Build mar/par view
-            let written_text = match mar.cmp(&par) {
-                std::cmp::Ordering::Greater => "mar > par, price rate is decreasing",
-                std::cmp::Ordering::Less => "mar < par, price rate is increasingq",
-                std::cmp::Ordering::Equal => "mar = par",
-            };
-
-            let marpar_text = format!(
-                "par: {}\nmar: {}\n{}",
-                data.1.as_u128() as f64 / 10_u128.pow(27) as f64,
-                data.2.as_u128() as f64 / 10_u128.pow(27) as f64,
-                written_text
-            );
-            let marpar_paragraph = Paragraph::new(marpar_text)
-                .block(Block::default().title("mar/par").borders(Borders::ALL));
+            let marpar_paragraph = monet::paint_marpar(mar, par);
             f.render_widget(marpar_paragraph, top_chunks[1]);
 
             // build and render widget for each urn in the main view
             for (i, urn) in data.0.iter().enumerate() {
-                let urn_text = format!(
-                    "art: {}\n\tink: {} \nloan: {} \nvalue: {}\nsafety: {}",
-                    urn.art.low_u64() as f64 / 10_u64.pow(18) as f64,
-                    urn.ink.low_u64() as f64 / match urn.ink_name.as_str() {"usdc" => 10_u64.pow(6) as f64, _ => 10_u64.pow(18) as f64},
-                    (urn.loan.as_u128() as f64 / 10_u64.pow(18) as f64),
-                    (urn.value.as_u128() as f64 / 10_u64.pow(18) as f64),
-                    urn.safety
-                );
-                let urn_paragraph = Paragraph::new(urn_text)
-                    .block(Block::default().title(urn.ink_name.as_str()).borders(Borders::ALL));
+                let urn_paragraph = monet::paint_urn(urn);
                 f.render_widget(urn_paragraph, urn_views[i]);
             }
 
             // populate active view, which is settings or ilk view
-            let active_view_text = match active_ilk.len() > 0{
-               true => {
+            let active_view_text = match active_ilk.len() > 0 {
+                true => {
                     let all_ilk_data = &data.5;
-
                     // now, instead, iterate over all active ilks and append their data to the active view
-                    let formatted_str = active_ilk.iter().enumerate().map(|(index, ilk)| {
-                        format!(
-                            "ilk: {}\n{}",
-                            ilk,
-                            match all_ilk_data.get(index) {
-                                Some(ilk) => {
-                                    let time_since_update = data.4 - NaiveDateTime::from_timestamp_opt(ilk.rho.as_u128() as i64, 0).unwrap();
-                                    let time_since_update_string = format!(
-                                        "{} hours, {} minutes, {} seconds",
-                                        time_since_update.num_seconds() / 3600,
-                                        (time_since_update.num_seconds() % 3600) / 60,
-                                        time_since_update.num_seconds() % 60
-                                    );
-                                    format!(
-                                        "  tart: {}\n  rho: {} UTC ({} hours ago)\n  dust: {}\n  fee: {}%",
-                                        (((ilk.tart * units.BLN) / units.WAD).as_u128() as f64 / units.BLN_F64),
-                                        NaiveDateTime::from_timestamp_opt(ilk.rho.as_u128() as i64, 0).unwrap(),
-                                        time_since_update_string,
-                                        (((ilk.dust * units.BLN) / units.RAD).as_u128() as f64
-                                            / units.BLN_F64),
-                                        (((ilk.fee * units.WAD) / units.RAY).as_u128() as f64 / units.BLN_F64.powf(2.0) - 1_f64) * units.BANKYEAR * 100.0
-                                    )
+                    let formatted_str = active_ilk
+                        .iter()
+                        .enumerate()
+                        .map(|(index, ilk)| {
+                            format!(
+                                "ilk: {}\n{}",
+                                ilk,
+                                match all_ilk_data.get(index) {
+                                    Some(ilk) => {
+                                        monet::paint_ilk(ilk, data.4)
+                                    }
+                                    _ => "  Awaiting ilk data...".to_string(),
                                 }
-                                _ => "  Awaiting ilk data...".to_string(),
-                            })
-                    }).collect::<Vec<String>>().join("\n");
+                            )
+                        })
+                        .collect::<Vec<String>>()
+                        .join("\n");
                     formatted_str
-                },
-                _ => match setting_active {
-                    true => format!("settings:\nrpc_url: {}, \nwallet_address: {}\nilks: {}", config.rpc.arb_rpc_url, config.urns.user_address, config.urns.ilks.join(", ")),
-                    false => "No active view".to_string(),
                 }
+                _ => match setting_active {
+                    true => format!(
+                        "settings:\nrpc_url: {}, \nwallet_address: {}\nilks: {}",
+                        config.rpc.arb_rpc_url,
+                        config.urns.user_address,
+                        config.urns.ilks.join(", ")
+                    ),
+                    false => "No active view".to_string(),
+                },
             };
 
             let active_view_paragraph = Paragraph::new(active_view_text)
                 .block(Block::default().title("active_view").borders(Borders::ALL));
             f.render_widget(active_view_paragraph, *active_view);
 
-            let footer_spans = vec![
-                Spans::from(vec![
-                    Span::styled("Last Block: ", Style::default().add_modifier(Modifier::BOLD)),
-                    Span::raw(format!("{} ", data.3)),
-                    Span::styled("Last Refreshed: ", Style::default().add_modifier(Modifier::BOLD)),
-                    Span::raw(format!("{} UTC ", data.4)),
-                ]),
-                Spans::from(vec![
-                    Span::styled("global_controls: ", Style::default().add_modifier(Modifier::BOLD)),
-                    Span::raw("'q' to quit, 'p' to pop last ilk, 'c' to clear active view, 's' to view settings\n"),
-                ]),
-                Spans::from(vec![
-                    Span::styled("ilk_shortcuts: ", Style::default().add_modifier(Modifier::BOLD)),
-                    Span::raw(ilk_help_message.as_str()),
-                ]),
-            ];
-            // Converting the collection of Spans into a single Text object
-            let footer_text = Text::from(footer_spans);
-            let footer_paragraph = Paragraph::new(footer_text).block(
-                Block::default()
-                    .title("ricoterm info")
-                    .borders(Borders::ALL),
-            );
+            let footer_paragraph = monet::paint_footer(data.3, data.4, ilk_help_message.as_str());
             f.render_widget(footer_paragraph, chunks[2]);
         })?;
 

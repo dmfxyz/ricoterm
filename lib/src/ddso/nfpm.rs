@@ -50,7 +50,7 @@ pub struct NPFM<T: Middleware + Clone> {
 
 impl<T: Middleware + Clone> NPFM<T> {
     pub fn new(provider: &Arc<T>, address: Address) -> Self {
-        let file = include_str!("../abi/npfm.json");
+        let file = include_str!("./abi/npfm.json");
         let abi = from_str::<Abi>(file).unwrap();
 
         let contract = Contract::new(address, abi, Arc::clone(provider));

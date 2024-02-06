@@ -385,7 +385,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         (((ilk.fee * units.WAD) / units.RAY).as_u128() as f64 / units.BLN_F64.powf(2.0) - 1_f64) * units.BANKYEAR * 100.0
                                     )
                                 }
-                                _ => "Awaiting ilk data".to_string(),
+                                _ => "  Awaiting ilk data...".to_string(),
                             })
                     }).collect::<Vec<String>>().join("\n");
                     formatted_str

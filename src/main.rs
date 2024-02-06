@@ -7,9 +7,10 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ethers::prelude::*;
-use ricolib::{math::units, vat::*};
-use urn::UrnData;
+use ethers::types::U256;
+use ricolib::{feedbase::Feedbase, math::units, nfpm::NPFM, uniwrapper::UniWrapper, vat::*};
 use std::{
+    cmp::max,
     collections::HashMap,
     convert::TryFrom,
     io,
@@ -24,31 +25,112 @@ use tui::{
     widgets::{Block, Borders, Paragraph},
     Terminal,
 };
+use urn::UrnData;
 
 use tui::style::Modifier;
 use tui::style::Style;
 
-use ricolib::feedbase::Feedbase;
 use ricolib::vox::Vox;
+
+async fn value_uni_nft<T: Middleware + Clone>(
+    token_id: &U256,
+    npfm: &NPFM<T>,
+    vat: &Vat<T>,
+    feedbase: &Feedbase<T>,
+    uniwrapper: &UniWrapper<T>,
+) -> U256 {
+    let position = npfm.positions(*token_id).await;
+    let token_0_xs = {
+        let mut bytes = [0u8; 32]; 
+        bytes[0..20].copy_from_slice(position.token0.as_bytes());
+        H256::from(bytes)
+    };
+    let t0_info: (Address, H256, U256) = (
+        Address::from_slice(
+            &vat.geth::<H256>(":uninft", "src", vec![token_0_xs])
+                .await
+                .as_bytes()[0..20],
+        ),
+        vat.geth(":uninft", "tag", vec![token_0_xs]).await,
+        vat.geth::<RU256>(":uninft", "liqr", vec![token_0_xs])
+            .await
+            .into(),
+    );
+
+    let token_1_xs = {
+        let mut bytes = [0u8; 32];
+        bytes[0..20].copy_from_slice(position.token1.as_bytes());
+        H256::from(bytes) // Con
+    };
+    let t1_info: (Address, H256, U256) = (
+        Address::from_slice(
+            &vat.geth::<H256>(":uninft", "src", vec![token_1_xs])
+                .await
+                .as_bytes()[0..20],
+        ),
+        vat.geth(":uninft", "tag", vec![token_1_xs]).await,
+        vat.geth::<RU256>(":uninft", "liqr", vec![token_1_xs])
+            .await
+            .into(),
+    );
+
+    let t1_price_256: U256 =
+        U256::from_big_endian(feedbase.pull(t1_info.0, t1_info.1).await.0.as_bytes());
+    let t0_price_256: U256 =
+        U256::from_big_endian(feedbase.pull(t0_info.0, t0_info.1).await.0.as_bytes());
+    let t1_price: U512 = t1_price_256.try_into().unwrap();
+    let t0_price: U512 = t0_price_256.try_into().unwrap();
+    let scaled_t1_price: U512 = t1_price * U512::from(units::new().X96);
+    let scaled_ration = scaled_t1_price * U512::from(units::new().X96) / t0_price;
+    let price_256 = U256::try_from(scaled_ration.integer_sqrt()).unwrap();
+    let total = uniwrapper.total(npfm.address, *token_id, price_256).await;
+    let liqr = max(t0_info.2, t1_info.2);
+    let value: U256 = (total.0 * t0_price_256 + total.1 * t1_price_256) / liqr;
+    value
+}
 
 async fn fetch_all_urn_data_for_ilk<T: Middleware + Clone>(
     ilk: &str,
     vat: &Vat<T>,
     feedbase: &Feedbase<T>,
+    npfm: &NPFM<T>,
+    uniwrapper: &UniWrapper<T>,
     wallet_address: Address,
 ) -> UrnData {
     let par = vat.par().await;
-    let ink: U256 = vat.ink(ilk, wallet_address).await;
+    let ink: U256 = match ilk.eq(":uninft") {
+        false => vat
+            .ink(ilk, wallet_address)
+            .await
+            .get(0)
+            .unwrap()
+            .to_owned(),
+        true => {
+            let ink = vat.ink(ilk, wallet_address).await;
+            let mut total_ink = U256::zero();
+            for token in ink {
+                total_ink += value_uni_nft(&token, npfm, vat, feedbase, uniwrapper).await;
+            }
+            total_ink
+        }
+    };
     let art: U256 = vat.urns(ilk, wallet_address).await;
-    let liqr: U256 = vat.geth::<RU256>(ilk, "liqr", Vec::new()).await.into();
-    let ililk = vat.ilks(ilk).await;
-    let src: Address =
-        Address::from_slice(&vat.geth::<H256>(ilk, "src", Vec::new()).await.as_bytes()[0..20]);
-    let tag: H256 = vat.geth::<H256>(ilk, "tag", Vec::new()).await;
+    let ililk: Ilk = vat.ilks(ilk).await;
     let loan = art * ililk.rack * par / U256::from(10_u128.pow(27)) / U256::from(10_u128.pow(27));
-    let rfeed: H256 = feedbase.pull(src, tag).await.0;
-    let feed: U256 = U256::from_big_endian(rfeed.as_bytes());
-    let value = feed * ink / liqr;
+    let value = match ilk {
+        ":uninft" => ink,
+        _ => {
+            let liqr: U256 = vat.geth::<RU256>(ilk, "liqr", Vec::new()).await.into();
+            let src: Address = Address::from_slice(
+                &vat.geth::<H256>(ilk, "src", Vec::new()).await.as_bytes()[0..20],
+            );
+            let tag: H256 = vat.geth::<H256>(ilk, "tag", Vec::new()).await;
+            let rfeed: H256 = feedbase.pull(src, tag).await.0;
+            let feed: U256 = U256::from_big_endian(rfeed.as_bytes());
+            feed * ink / liqr
+        }
+    };
+
     let safety = match loan.cmp(&U256::zero()) {
         std::cmp::Ordering::Equal => 0.0,
         _ => (U256::from(10_u128.pow(9)) * value / loan).as_u128() as f64 / 10_u128.pow(9) as f64,
@@ -64,18 +146,23 @@ async fn fetch_all_urn_data_for_ilk<T: Middleware + Clone>(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn fetch_data<T: Middleware + Clone>(
     provider: Arc<Provider<Http>>,
     vat: &Vat<T>,
     vox: &Vox<T>,
     ilks: &Vec<String>,
     feedbase: &Feedbase<T>,
+    npfm: &NPFM<T>,
+    uniwrapper: &UniWrapper<T>,
     wallet_address: Address,
     active_ilk: &Arc<Mutex<Vec<String>>>,
 ) -> Result<(Vec<UrnData>, U256, U256, U64, NaiveDateTime, Vec<Ilk>), Box<dyn std::error::Error>> {
     let mut urn_data = Vec::new();
     for ilk in ilks {
-        urn_data.push(fetch_all_urn_data_for_ilk(ilk, vat, feedbase, wallet_address).await);
+        urn_data.push(
+            fetch_all_urn_data_for_ilk(ilk, vat, feedbase, npfm, uniwrapper, wallet_address).await,
+        );
     }
     // // get current block number from the provider
     let par = vat.par().await;
@@ -119,10 +206,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let vat = Vat::new(&provider, config.rico.diamond.parse()?);
     let vox = Vox::new(&provider, config.rico.diamond.parse()?);
     let fb = Feedbase::new(&provider, config.rico.feedbase.parse()?);
+    let npfm = NPFM::new(&provider, config.rico.npfm.parse()?);
+    let uniwrapper = UniWrapper::new(&provider, config.rico.uniwrapper.parse()?);
     let wallet_address: Address = config.urns.user_address.parse()?;
-    let mut update_count = 0;
     let units = units::new();
-
     let (tx, rx) = mpsc::channel();
     let mut empty_urn_vec = Vec::<UrnData>::new();
     for urn in config.urns.ilks.iter() {
@@ -157,6 +244,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     &vox,
                     &ilk_clone,
                     &fb,
+                    &npfm,
+                    &uniwrapper,
                     wallet_address,
                     &active_ilk_clone,
                 )
@@ -165,7 +254,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Ok((urn_data, par, mar, block, timestamp, ilk)) => {
                         let mut data = data_clone.lock().unwrap();
                         *data = (urn_data, par, mar, block, timestamp, ilk);
-                        update_count += 1;
                         tx.send(()).unwrap();
                     }
                     Err(e) => println!("Error fetching data: {}", e),

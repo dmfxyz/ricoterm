@@ -1,9 +1,10 @@
-use ethers::{abi::Abi, contract::Contract, prelude::*, types::Address};
+use ethers::{abi::{Abi, ParamType, Token}, contract::Contract, prelude::*, types::Address};
 use serde_json::from_str;
 use std::sync::Arc;
 
 use crate::utils::string_to_bytes32;
 
+#[derive(Debug)]
 pub struct Ilk {
     pub tart: U256,
     pub rack: U256,
@@ -53,16 +54,41 @@ impl<T: Middleware + Clone> Vat<T> {
             .unwrap();
     }
 
-    pub async fn ink(&self, ilk: &str, urn: Address) -> U256 {
+    pub async fn ink(&self, ilk: &str, urn: Address) -> Vec<U256> {
         let ilk = string_to_bytes32(ilk);
-        let raw_ilk = self
-            .contract
-            .method::<(H256, Address), Bytes>("ink", (ilk, urn))
-            .unwrap()
-            .call()
-            .await
-            .unwrap();
-        U256::from_big_endian(&raw_ilk)
+        match ilk.eq(&string_to_bytes32(":uninft")) {
+            true => {
+                let raw_ilk = self
+                    .contract
+                    .method::<(H256, Address), Bytes>("ink", (ilk, urn))
+                    .unwrap()
+                    .call()
+                    .await
+                    .unwrap();
+                let decoded_tokens = ethers::abi::decode(&[ParamType::Array(Box::new(ParamType::Uint(256)))], &raw_ilk.0).unwrap();
+                let mut token_ids: Vec<U256> = Vec::new();
+                if let Token::Array(values) = &decoded_tokens[0] {
+                    for token in values {
+                        if let Token::Uint(value) = token {
+                            token_ids.push(*value);
+                        }
+                    }
+                } else {
+                    println!("Unexpected token type")
+                }
+                return token_ids;
+            }
+            false => {
+                let raw_ilk = self
+                    .contract
+                    .method::<(H256, Address), Bytes>("ink", (ilk, urn))
+                    .unwrap()
+                    .call()
+                    .await
+                    .unwrap();
+                return vec![U256::from_big_endian(&raw_ilk)];
+            }
+        }
     }
 
     pub async fn urns(&self, ilk: &str, usr: Address) -> U256 {

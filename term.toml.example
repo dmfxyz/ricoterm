@@ -1,5 +1,6 @@
 [rpc]
 arb_rpc_url = "https://arb1.arbitrum.io/rpc"
+refresh_seconds = 10
 
 [urns]
 user_address = "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"
@@ -21,3 +22,5 @@ n = ':uninft'
 [rico]
 diamond = "0x598C6c1cd9459F882530FC9D7dA438CB74C6CB3b"
 feedbase = "0xa84F3ad46f6Fa8D09B52EbC61f1C25aeF33231F8"
+npfm = "0xc36442b4a4522e871399cd717abdd847ab11fe88"
+uniwrapper = "0xf18eA2cf7A87C3F11fF8FF6B073DdEDfE2497f03"

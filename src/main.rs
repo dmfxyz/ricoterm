@@ -108,7 +108,7 @@ async fn fetch_data<T: Middleware + Clone>(
     wallet_address: Address,
     active_ilk: &Arc<Mutex<Vec<String>>>,
 ) -> Result<
-    (Vec<UrnData>, U256, U256, U64, NaiveDateTime, Vec<Ilk>, U256),
+    (Vec<UrnData>, U256, U256, U64, NaiveDateTime, Vec<Ilk>, U256, U256),
     Box<dyn std::error::Error>,
 > {
     let mut urn_data = Vec::new();
@@ -138,6 +138,7 @@ async fn fetch_data<T: Middleware + Clone>(
         ilk_data.push(ilk_info);
     }
     let way = vox.way().await;
+    let tau = vox.tau().await;
     Ok((
         urn_data,
         par,
@@ -146,6 +147,7 @@ async fn fetch_data<T: Middleware + Clone>(
         last_refreshed_as_time,
         ilk_data,
         way,
+        tau,
     ))
 }
 
@@ -186,6 +188,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         NaiveDateTime::from_timestamp_opt(0, 0).unwrap(),
         Vec::<Ilk>::new(),
         U256::zero(),
+        U256::zero(),
     )));
 
     // Spawn background task for fetching data
@@ -212,9 +215,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 )
                 .await
                 {
-                    Ok((urn_data, par, mar, block, timestamp, ilk, way)) => {
+                    Ok((urn_data, par, mar, block, timestamp, ilk, way, tau)) => {
                         let mut data = data_clone.lock().unwrap();
-                        *data = (urn_data, par, mar, block, timestamp, ilk, way);
+                        *data = (urn_data, par, mar, block, timestamp, ilk, way, tau);
                         tx.send(()).unwrap();
                     }
                     Err(e) => println!("Error fetching data: {}", e),
@@ -235,9 +238,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .margin(1)
                 .constraints(
                     [
-                        Constraint::Length(5),      // Top / Hero
+                        Constraint::Length(7),      // Top / Hero
                         Constraint::Percentage(65), // Main display area for urns and active views
-                        Constraint::Percentage(30), // Footer and help section
+                        Constraint::Percentage(28), // Footer and help section
                     ]
                     .as_ref(),
                 )
@@ -277,7 +280,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Some(nickname) => format!("{}'s urns", nickname),
                 None => format!("{}'s urns", &config.urns.user_address),
             })
-            .style(Style::default().add_modifier(Modifier::BOLD)); // Optional: Add styling as needed
+            .style(Style::default().add_modifier(Modifier::BOLD));
             f.render_widget(title, top_chunks[0]);
             // Grab data from the data mutex and start populating
             let data = data.lock().unwrap();
@@ -285,8 +288,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mar = data.2;
             let par = data.1;
             let way = data.6;
+            let tau = data.7;
             // Build mar/par view
-            let marpar_paragraph = monet::paint_marpar(mar, par, way);
+            let marpar_paragraph = monet::paint_marpar(mar, par, way, tau, data.4);
             f.render_widget(marpar_paragraph, top_chunks[1]);
 
             // build and render widget for each urn in the main view

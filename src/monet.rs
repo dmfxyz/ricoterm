@@ -96,10 +96,10 @@ pub fn paint_footer(
     )
 }
 
-pub fn paint_marpar(mar: U256, par: U256, way: U256) -> Paragraph<'static> {
+pub fn paint_marpar(mar: U256, par: U256, way: U256, tau: U256, current_time: NaiveDateTime) -> Paragraph<'static> {
     let units = units::new();
     let price_rate = ((way.as_u128() as f64 / units.RAY_F64).powf(units.BANKYEAR) - 1.0) * 100.0;
-
+    let time_delta = current_time - NaiveDateTime::from_timestamp_opt(tau.as_u128() as i64, 0).unwrap();
     //((way.as_u128() / 10_u128.pow(27)) as f64).powf(units.BANKYEAR) - 1.0;
     //((((way * units.BLN  / units.RAY).as_u128() as f64) / units.BLN_F64).powf(units.BANKYEAR) - 1.0) * 100.0;
     let written_text = match mar.cmp(&par) {
@@ -118,10 +118,16 @@ pub fn paint_marpar(mar: U256, par: U256, way: U256) -> Paragraph<'static> {
     };
 
     let marpar_text = format!(
-        "par: {}\nmar: {}\n{}",
+        "par: {}\nmar: {}\nmsg: {}\nlast poke: {}",
         par.as_u128() as f64 / 10_u128.pow(27) as f64,
         mar.as_u128() as f64 / 10_u128.pow(27) as f64,
-        written_text
+        written_text,
+        format!(
+            "{} hours, {} minutes, {} seconds ago",
+            time_delta.num_seconds() / 3600,
+            (time_delta.num_seconds() % 3600) / 60,
+            time_delta.num_seconds() % 60
+        )
     );
     Paragraph::new(marpar_text).block(Block::default().title("mar/par").borders(Borders::ALL))
 }

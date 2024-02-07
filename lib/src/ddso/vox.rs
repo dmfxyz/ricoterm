@@ -41,4 +41,15 @@ impl<T: Middleware + Clone> Vox<T> {
             .unwrap();
         way
     }
+
+    pub async fn tau(&self) -> U256 {
+        let tau = self
+            .contract
+            .method::<(), U256>("tau", ())
+            .unwrap()
+            .call()
+            .await
+            .unwrap();
+        tau
+    }
 }

@@ -18,6 +18,7 @@ pub struct IlkConfig {
 #[derive(Deserialize, Debug)]
 pub struct RpcConfig {
     pub arb_rpc_url: String,
+    pub refresh_seconds: u64,
 }
 
 #[derive(Deserialize, Debug)]

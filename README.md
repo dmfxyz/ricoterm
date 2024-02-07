@@ -1,5 +1,4 @@
 ### Ricoterm
 
-# TODO:
-1. Price Rate
-2. Fee APY (i.e. qr apy per ilk)
+it's like a bloomberg terminal, but for rico
+[! rico term](term.gif)

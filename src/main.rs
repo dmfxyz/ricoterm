@@ -107,7 +107,10 @@ async fn fetch_data<T: Middleware + Clone>(
     uniwrapper: &UniWrapper<T>,
     wallet_address: Address,
     active_ilk: &Arc<Mutex<Vec<String>>>,
-) -> Result<(Vec<UrnData>, U256, U256, U64, NaiveDateTime, Vec<Ilk>), Box<dyn std::error::Error>> {
+) -> Result<
+    (Vec<UrnData>, U256, U256, U64, NaiveDateTime, Vec<Ilk>, U256),
+    Box<dyn std::error::Error>,
+> {
     let mut urn_data = Vec::new();
     for ilk in ilks {
         urn_data.push(
@@ -134,8 +137,16 @@ async fn fetch_data<T: Middleware + Clone>(
         let ilk_info = vat.ilks(ilk.as_str()).await;
         ilk_data.push(ilk_info);
     }
-
-    Ok((urn_data, par, mar, block, last_refreshed_as_time, ilk_data))
+    let way = vox.way().await;
+    Ok((
+        urn_data,
+        par,
+        mar,
+        block,
+        last_refreshed_as_time,
+        ilk_data,
+        way,
+    ))
 }
 
 #[tokio::main]
@@ -174,6 +185,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         U64::zero(),
         NaiveDateTime::from_timestamp_opt(0, 0).unwrap(),
         Vec::<Ilk>::new(),
+        U256::zero(),
     )));
 
     // Spawn background task for fetching data
@@ -200,14 +212,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 )
                 .await
                 {
-                    Ok((urn_data, par, mar, block, timestamp, ilk)) => {
+                    Ok((urn_data, par, mar, block, timestamp, ilk, way)) => {
                         let mut data = data_clone.lock().unwrap();
-                        *data = (urn_data, par, mar, block, timestamp, ilk);
+                        *data = (urn_data, par, mar, block, timestamp, ilk, way);
                         tx.send(()).unwrap();
                     }
                     Err(e) => println!("Error fetching data: {}", e),
                 }
-                tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+                tokio::time::sleep(tokio::time::Duration::from_secs(config.rpc.refresh_seconds))
+                    .await;
             }
         });
     });
@@ -271,9 +284,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let active_ilk = active_ilk.lock().unwrap();
             let mar = data.2;
             let par = data.1;
-
+            let way = data.6;
             // Build mar/par view
-            let marpar_paragraph = monet::paint_marpar(mar, par);
+            let marpar_paragraph = monet::paint_marpar(mar, par, way);
             f.render_widget(marpar_paragraph, top_chunks[1]);
 
             // build and render widget for each urn in the main view
@@ -308,8 +321,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 _ => match setting_active {
                     true => format!(
-                        "settings:\nrpc_url: {}, \nwallet_address: {}\nilks: {}",
+                        "settings:\nrpc_url: {}\n refresh_freq: {} seconds \nwallet_address: {}\nilks: {}",
                         config.rpc.arb_rpc_url,
+                        config.rpc.refresh_seconds,
                         config.urns.user_address,
                         config.urns.ilks.join(", ")
                     ),

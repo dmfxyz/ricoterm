@@ -1,10 +1,7 @@
 use std::sync::Arc;
 
 use ethers::{
-    abi::{Abi, Address},
-    contract::Contract,
-    providers::Middleware,
-    types::H256,
+    abi::{Abi, Address}, contract::Contract, providers::Middleware, types::{H256, U256},
 };
 use serde_json::from_str;
 
@@ -32,5 +29,16 @@ impl<T: Middleware + Clone> Vox<T> {
             .await
             .unwrap();
         (src, tag)
+    }
+
+    pub async fn way(&self) -> U256 {
+        let way = self
+            .contract
+            .method::<(), U256>("way", ())
+            .unwrap()
+            .call()
+            .await
+            .unwrap();
+        way
     }
 }

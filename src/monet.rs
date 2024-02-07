@@ -10,7 +10,6 @@ use tui::{
 use crate::urn::UrnData;
 
 pub fn paint_urn(urn: &UrnData) -> Paragraph {
-    let units = units::new();
     let ink = match &urn.ninks {
         Some(ninks) => ninks
             .iter()
@@ -97,11 +96,25 @@ pub fn paint_footer(
     )
 }
 
-pub fn paint_marpar(mar: U256, par: U256) -> Paragraph<'static> {
+pub fn paint_marpar(mar: U256, par: U256, way: U256) -> Paragraph<'static> {
+    let units = units::new();
+    let price_rate = ((way.as_u128() as f64 / units.RAY_F64).powf(units.BANKYEAR) - 1.0) * 100.0;
+
+    //((way.as_u128() / 10_u128.pow(27)) as f64).powf(units.BANKYEAR) - 1.0;
+    //((((way * units.BLN  / units.RAY).as_u128() as f64) / units.BLN_F64).powf(units.BANKYEAR) - 1.0) * 100.0;
     let written_text = match mar.cmp(&par) {
-        std::cmp::Ordering::Greater => "mar > par, price rate is decreasing",
-        std::cmp::Ordering::Less => "mar < par, price rate is increasing",
-        std::cmp::Ordering::Equal => "mar = par",
+        std::cmp::Ordering::Greater => format!(
+            "mar > par, price rate is decreasing (currently {:.6}%)",
+            price_rate
+        ),
+        std::cmp::Ordering::Less => format!(
+            "mar < par, price rate is increasing (currently {:.6}%)",
+            price_rate
+        ),
+        std::cmp::Ordering::Equal => format!(
+            "mar = par, price rate is stable (currently {:.6}%)",
+            price_rate
+        ),
     };
 
     let marpar_text = format!(

@@ -10,9 +10,16 @@ use crossterm::{
 use ethers::prelude::*;
 use ethers::types::U256;
 use ricolib::{
-    ddso::{feedbase::Feedbase, nfpm::NPFM, uniwrapper::UniWrapper, vat::*, vox::*},
+    ddso::{
+        events::{IntoNewPalm2Vec, NewPalm2, NEW_PALM_2_SIG},
+        feedbase::Feedbase,
+        nfpm::NPFM,
+        uniwrapper::UniWrapper,
+        vat::*,
+        vox::*,
+    },
     math::units,
-    utils::string_to_bytes32,
+    utils::{bytes32_to_string, string_to_bytes32},
     valuation::Valuer,
 };
 use std::{
@@ -26,14 +33,13 @@ use std::{
 use tui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
-    style,
+    style::{self, Style},
     widgets::{Block, Borders, Paragraph},
     Terminal,
 };
 use urn::UrnData;
 
 use tui::style::Modifier;
-use tui::style::Style;
 
 async fn fetch_all_urn_data_for_ilk<T: Middleware + Clone>(
     ilk: &str,
@@ -101,27 +107,39 @@ async fn fetch_all_urn_data_for_ilk<T: Middleware + Clone>(
 #[allow(clippy::too_many_arguments)]
 async fn fetch_data<T: Middleware + Clone>(
     provider: Arc<Provider<Http>>,
-    vat: &Vat<T>,
-    vox: &Vox<T>,
-    ilks: &Vec<String>,
-    feedbase: &Feedbase<T>,
-    npfm: &NPFM<T>,
-    uniwrapper: &UniWrapper<T>,
-    wallet_address: Address,
-    active_ilk: &Arc<Mutex<Vec<String>>>,
-    chainlink_address: Address,
+    world: Arc<RicoWorld<T>>,
+    state: &Arc<Mutex<State>>,
 ) -> Result<ChainData, Box<dyn std::error::Error>> {
-    let mut urn_data = Vec::new();
-    for ilk in ilks {
+    let mut urn_data = Vec::<UrnData>::new();
+    let (urns, active_ilks, wallet_address, active_palm_2) = {
+        let state = state.lock().unwrap();
+        (
+            state.urns.clone(),
+            state.active_ilk.clone(),
+            state.user_address,
+            state.active_new_palm_2,
+        )
+    };
+
+    for ilk in urns {
         urn_data.push(
-            fetch_all_urn_data_for_ilk(ilk, vat, feedbase, npfm, uniwrapper, wallet_address).await,
+            fetch_all_urn_data_for_ilk(
+                &ilk,
+                &world.vat,
+                &world.feedbase,
+                &world.npfm,
+                &world.uniwrapper,
+                wallet_address,
+            )
+            .await,
         );
     }
     // // get current block number from the provider
-    let par = vat.par().await;
+    let par = world.vat.par().await;
     let mar = U256::from_big_endian(
-        feedbase
-            .pull(vox.tip().await.0, vox.tip().await.1)
+        world
+            .feedbase
+            .pull(world.vox.tip().await.0, world.vox.tip().await.1)
             .await
             .0
             .as_bytes(),
@@ -131,22 +149,39 @@ async fn fetch_data<T: Middleware + Clone>(
     let last_refreshed_as_time =
         chrono::NaiveDateTime::from_timestamp_opt(last_refreshed.as_u64() as i64, 0).unwrap();
 
-    let active_ilk = { active_ilk.lock().unwrap().clone() };
     let mut ilk_data = Vec::<Ilk>::new();
-    for ilk in active_ilk.iter() {
-        let ilk_info = vat.ilks(ilk.as_str()).await;
+    for ilk in active_ilks.iter() {
+        let ilk_info = world.vat.ilks(ilk.as_str()).await;
         ilk_data.push(ilk_info);
     }
-    let way = vox.way().await;
-    let tau = vox.tau().await;
-    let how = vox.how().await;
+    let way = world.vox.way().await;
+    let tau = world.vox.tau().await;
+    let how = world.vox.how().await;
     let xau = U256::from_big_endian(
-        feedbase
-            .pull(chainlink_address, string_to_bytes32("xau:usd"))
+        world
+            .feedbase
+            .pull(world.chainlink_address, string_to_bytes32("xau:usd"))
             .await
             .0
             .as_bytes(),
     );
+
+    let mut logs = match active_palm_2 {
+        Some("art") => {
+            let filter = Filter::new()
+                .address(vec![world.vat.address])
+                .topic0(*NEW_PALM_2_SIG)
+                .topic1(string_to_bytes32("art"))
+                .from_block(BlockNumber::Earliest)
+                .to_block(block);
+
+            provider.get_logs(&filter).await?
+        }
+        _ => Vec::new(),
+    };
+
+    logs.sort_by(|a, b| a.block_number.cmp(&b.block_number));
+    logs.reverse();
 
     Ok(ChainData {
         urn_data,
@@ -159,6 +194,7 @@ async fn fetch_data<T: Middleware + Clone>(
         tau,
         how,
         xau,
+        logs: logs.into_new_palm2_vec(),
     })
 }
 
@@ -173,13 +209,32 @@ pub struct ChainData {
     pub tau: U256,
     pub how: U256,
     pub xau: U256,
+    pub logs: Vec<NewPalm2>,
+}
+
+pub struct RicoWorld<T: Middleware + Clone> {
+    vat: Vat<T>,
+    vox: Vox<T>,
+    feedbase: Feedbase<T>,
+    npfm: NPFM<T>,
+    uniwrapper: UniWrapper<T>,
+    chainlink_address: Address,
+}
+
+pub struct State {
+    pub active_ilk: Vec<String>,
+    pub urns: Vec<String>,
+    pub user_address: Address,
+    pub active_new_palm_2: Option<&'static str>,
+    pub selected_menu_view: SelectedMenuView,
+    pub selected_active_view: SelectedActiveView,
 }
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = config::read_config("./term.toml")?;
     let ilk_help_message = format!("{:?}", &config.ilks.key_mappings);
     let mut live_ilks_key_char: HashMap<KeyCode, String> = HashMap::new();
-    for (key, value) in config.ilks.key_mappings.into_iter() {
+    for (key, value) in config.ilks.key_mappings.clone().into_iter() {
         live_ilks_key_char.insert(KeyCode::Char(key), value.to_string());
     }
     enable_raw_mode()?;
@@ -190,12 +245,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut terminal = Terminal::new(backend)?;
 
     let provider = Arc::new(Provider::<Http>::try_from(config.rpc.arb_rpc_url.as_str())?);
-    let vat = Vat::new(&provider, config.rico.diamond.parse()?);
-    let vox = Vox::new(&provider, config.rico.diamond.parse()?);
-    let fb = Feedbase::new(&provider, config.rico.feedbase.parse()?);
-    let npfm = NPFM::new(&provider, config.rico.npfm.parse()?);
-    let uniwrapper = UniWrapper::new(&provider, config.rico.uniwrapper.parse()?);
     let wallet_address: Address = config.urns.user_address.parse()?;
+
+    let world = Arc::new(RicoWorld {
+        vat: Vat::new(&provider, config.rico.diamond.parse()?),
+        vox: Vox::new(&provider, config.rico.diamond.parse()?),
+        feedbase: Feedbase::new(&provider, config.rico.feedbase.parse()?),
+        npfm: NPFM::new(&provider, config.rico.npfm.parse()?),
+        uniwrapper: UniWrapper::new(&provider, config.rico.uniwrapper.parse()?),
+        chainlink_address: config.rico.chain_link_feed.parse()?,
+    });
+
+    let state = Arc::new(Mutex::new(State {
+        active_ilk: Vec::<String>::new(),
+        urns: config.urns.ilks.clone(),
+        user_address: wallet_address,
+        active_new_palm_2: None,
+        selected_menu_view: SelectedMenuView::Urn,
+        selected_active_view: SelectedActiveView::Clear,
+    }));
+
     let mut empty_urn_vec = Vec::<UrnData>::new();
     for urn in config.urns.ilks.iter() {
         empty_urn_vec.push(UrnData {
@@ -214,14 +283,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tau: U256::zero(),
         how: U256::zero(),
         xau: U256::zero(),
+        logs: Vec::<NewPalm2>::new(),
     }));
 
     // Spawn background task for fetching data
     let provider_clone = provider.clone();
     let data_clone = data.clone();
-    let ilk_clone = config.urns.ilks.clone();
-    let active_ilk = Arc::new(Mutex::new(Vec::<String>::new()));
-    let active_ilk_clone = active_ilk.clone();
+    let state_clone = state.clone();
     let mut setting_active: bool = false;
     let mut menu_index: i32 = -1;
     let mut selected_menu_view = SelectedMenuView::Urn;
@@ -230,20 +298,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
             loop {
-                match fetch_data(
-                    provider_clone.clone(),
-                    &vat,
-                    &vox,
-                    &ilk_clone,
-                    &fb,
-                    &npfm,
-                    &uniwrapper,
-                    wallet_address,
-                    &active_ilk_clone,
-                    config.rico.chain_link_feed.parse().unwrap(),
-                )
-                .await
-                {
+                match fetch_data(provider_clone.clone(), Arc::clone(&world), &state_clone).await {
                     Ok(new_data) => {
                         let mut data = data_clone.lock().unwrap();
                         *data = new_data;
@@ -272,13 +327,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             f.render_widget(title, canvas.navbar);
             // Grab data from the data mutex and start populating
             let data = data.lock().unwrap();
-            let active_ilk = active_ilk.lock().unwrap();
+            let state = state.lock().unwrap();
             // Build mar/par view
 
             let marpar_paragraph = match selected_market_view {
-                SelectedMarketView::MarAndPar => {
-                    monet::paint_marpar(data.mar, data.par, data.way, data.tau, data.how, data.last_refreshed)
-                }
+                SelectedMarketView::MarAndPar => monet::paint_marpar(
+                    data.mar,
+                    data.par,
+                    data.way,
+                    data.tau,
+                    data.how,
+                    data.last_refreshed,
+                ),
                 SelectedMarketView::DollarConversion => {
                     monet::paint_pricing_screen(data.mar, data.par, data.xau)
                 }
@@ -289,7 +349,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // build and render widget for each urn in the main view
             match selected_menu_view {
                 SelectedMenuView::Menu => {
-                    let menu_paragraph = monet::paint_menu(vec!["pricing", "exit"], menu_index as usize);
+                    let menu_paragraph =
+                        monet::paint_menu(vec!["pricing", "exit"], menu_index as usize);
                     canvas.left_main_panel.menu_view = Some(canvas.left_main_panel.base_view);
                     f.render_widget(menu_paragraph, canvas.left_main_panel.menu_view.unwrap());
                 }
@@ -308,98 +369,143 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     canvas.left_main_panel.set_urn_view(urn_views);
                     let urn_views = &canvas.left_main_panel.urn_view.unwrap();
                     for (i, urn) in data.urn_data.iter().enumerate() {
-                        let urn_paragraph = monet::paint_urn(urn, active_ilk.contains(&urn.ink_name));
+                        let urn_paragraph =
+                            monet::paint_urn(urn, state.active_ilk.contains(&urn.ink_name));
                         f.render_widget(urn_paragraph, urn_views[i]);
                     }
-
                 }
                 SelectedMenuView::Pricing => {
-                    let pricing_paragraph = monet::paint_pricing_screen(data.mar, data.par ,data.xau);
+                    let pricing_paragraph =
+                        monet::paint_pricing_screen(data.mar, data.par, data.xau);
                     canvas.left_main_panel.menu_view = Some(canvas.left_main_panel.base_view);
                     f.render_widget(pricing_paragraph, canvas.left_main_panel.menu_view.unwrap());
-
                 }
             }
-
-            // populate active view, which is settings or ilk view
-            let active_view_text = match active_ilk.len() > 0 {
-                true => {
-                    let all_ilk_data = &data.ilks;
-                    // now, instead, iterate over all active ilks and append their data to the active view
-                    let formatted_str = active_ilk
-                        .iter()
-                        .enumerate()
-                        .map(|(index, ilk)| {
-                            format!(
-                                "ilk: {}\n{}",
-                                ilk,
-                                match all_ilk_data.get(index) {
-                                    Some(ilk) => {
-                                        monet::paint_ilk(ilk, data.last_refreshed)
+            let (active_text, active_title) = match &state.selected_active_view {
+                SelectedActiveView::Settings => (monet::paint_settings(&config), "settings"),
+                SelectedActiveView::Ilk => {
+                    if !state.active_ilk.is_empty() {
+                        let all_ilk_data = &data.ilks;
+                        // now, instead, iterate over all active ilks and append their data to the active view
+                        let formatted_str = state
+                            .active_ilk
+                            .iter()
+                            .enumerate()
+                            .map(|(index, ilk)| {
+                                format!(
+                                    "ilk: {}\n{}",
+                                    ilk,
+                                    match all_ilk_data.get(index) {
+                                        Some(ilk) => {
+                                            monet::paint_ilk(ilk, data.last_refreshed)
+                                        }
+                                        _ => "  Awaiting ilk data...".to_string(),
                                     }
-                                    _ => "  Awaiting ilk data...".to_string(),
-                                }
-                            )
-                        })
-                        .collect::<Vec<String>>()
-                        .join("\n");
-                    formatted_str
+                                )
+                            })
+                            .collect::<Vec<String>>()
+                            .join("\n");
+                        (Paragraph::new(formatted_str), "ilk_view")
+                    } else {
+                        (Paragraph::new("No active view".to_string()), "active_view")
+                    }
                 }
-                _ => match setting_active {
-                    true => format!(
-                        "settings:\nrpc_url: {}\n refresh_freq: {} seconds \nwallet_address: {}\nilks: {}",
-                        config.rpc.arb_rpc_url,
-                        config.rpc.refresh_seconds,
-                        config.urns.user_address,
-                        config.urns.ilks.join(", ")
-                    ),
-                    false => "No active view".to_string(),
-                },
+                SelectedActiveView::NewPalm2 => {
+                    if !data.logs.is_empty() {
+                        let filtered_logs = data
+                            .logs
+                            .iter()
+                            .filter(|log| {
+                                !state.active_ilk.is_empty()
+                                    && state.active_ilk.contains(&bytes32_to_string(log.ilk))
+                                    || state.active_ilk.is_empty()
+                            })
+                            .collect::<Vec<&NewPalm2>>();
+
+                        let logs_text = monet::paint_newpalm2s(filtered_logs, &canvas.color_map);
+                        (logs_text, "frob/bail")
+                    } else {
+                        (Paragraph::new("Awaiting NewPalm2 event..."), "frob/bail")
+                    }
+                }
+                _ => (Paragraph::new("No active view"), "active_view"),
             };
 
-
-            let active_view_paragraph = Paragraph::new(active_view_text)
-                .block(Block::default().title("active_view").borders(Borders::ALL).border_style(style::Style::default().fg(
-                    match setting_active || active_ilk.len() > 0 {
-                        true => tui::style::Color::LightYellow,
-                        false => tui::style::Color::Gray,
-                    }
-                )));
+            let active_view_paragraph = active_text.block(
+                Block::default()
+                    .title(active_title)
+                    .borders(Borders::ALL)
+                    .border_style(style::Style::default().fg({
+                        if state.selected_active_view != SelectedActiveView::Clear {
+                            style::Color::LightYellow
+                        } else {
+                            style::Color::Gray
+                        }
+                    })),
+            );
             f.render_widget(active_view_paragraph, canvas.right_main_pane.ilk_view);
 
-            let footer_paragraph = monet::paint_footer(data.block, data.last_refreshed, ilk_help_message.as_str());
+            let footer_paragraph =
+                monet::paint_footer(data.block, data.last_refreshed, ilk_help_message.as_str());
             f.render_widget(footer_paragraph, canvas.footer);
         })?;
 
         if rx.try_recv().is_ok() {
             // Data was refreshed
-        } else if event::poll(std::time::Duration::from_millis(250))? {
+        } else if event::poll(std::time::Duration::from_millis(200))? {
             if let event::Event::Key(key) = event::read()? {
                 match live_ilks_key_char.get(&key.code).cloned() {
                     Some(ilk) => {
-                        let mut active_ilk = active_ilk.lock().unwrap();
-                        if !active_ilk.contains(&ilk) {
-                            active_ilk.push(ilk);
+                        let mut state = state.lock().unwrap();
+                        match state.selected_active_view {
+                            SelectedActiveView::Ilk => {
+                                if !state.active_ilk.contains(&ilk) {
+                                    state.active_ilk.push(ilk);
+                                }
+                            }
+                            SelectedActiveView::NewPalm2 => {
+                                if !state.active_ilk.contains(&ilk) {
+                                    state.active_ilk.push(ilk);
+                                }
+                            }
+
+                            SelectedActiveView::Clear => {
+                                if !state.active_ilk.contains(&ilk) {
+                                    state.active_ilk.push(ilk);
+                                }
+                                state.selected_active_view = SelectedActiveView::Ilk;
+                            }
+                            _ => {}
                         }
-                        //data.lock().unwrap().5 = Vec::<Ilk>::new();
                     }
                     _ => match key.code {
                         KeyCode::Char('q') => {
                             break;
                         }
                         KeyCode::Char('c') => {
-                            let mut active_ilk = active_ilk.lock().unwrap();
-                            *active_ilk = Vec::<String>::new();
-                            data.lock().unwrap().ilks = Vec::<Ilk>::new();
+                            let mut state = state.lock().unwrap();
+                            state.selected_active_view = SelectedActiveView::Clear;
+                            state.active_ilk.clear();
+                            state.active_new_palm_2 = None;
+                            data.lock().unwrap().ilks.clear();
                             setting_active = false;
                         }
                         KeyCode::Char('s') => {
+                            let mut state = state.lock().unwrap();
+                            match state.selected_active_view {
+                                SelectedActiveView::Settings => {
+                                    state.selected_active_view = SelectedActiveView::Clear;
+                                }
+
+                                _ => {
+                                    state.selected_active_view = SelectedActiveView::Settings;
+                                }
+                            };
                             setting_active = !setting_active;
-                            data.lock().unwrap().ilks = Vec::<Ilk>::new();
-                            *active_ilk.lock().unwrap() = Vec::<String>::new();
                         }
                         KeyCode::Char('p') => {
-                            active_ilk.lock().unwrap().pop();
+                            let mut state = state.lock().unwrap();
+                            state.active_ilk.pop();
                             data.lock().unwrap().ilks.pop();
                         }
 
@@ -428,6 +534,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     selected_market_view = SelectedMarketView::MarAndPar;
                                 }
                             };
+                        }
+
+                        KeyCode::Char('f') => {
+                            let mut state = state.lock().unwrap();
+                            match state.selected_active_view {
+                                SelectedActiveView::Clear => {
+                                    state.selected_active_view = SelectedActiveView::NewPalm2;
+                                    state.active_new_palm_2 = Some("art");
+                                }
+                                SelectedActiveView::NewPalm2 => {
+                                    state.selected_active_view = SelectedActiveView::Clear;
+                                    state.active_new_palm_2 = None;
+                                }
+                                _ => {}
+                            }
                         }
 
                         // capture down arrow key
@@ -482,4 +603,12 @@ pub enum SelectedMenuView {
 pub enum SelectedMarketView {
     MarAndPar,
     DollarConversion,
+}
+
+#[derive(PartialEq, Eq)]
+pub enum SelectedActiveView {
+    Ilk,
+    Settings,
+    NewPalm2,
+    Clear,
 }

@@ -3,3 +3,4 @@ pub mod vat;
 pub mod nfpm;
 pub mod uniwrapper;
 pub mod vox;
+pub mod events;

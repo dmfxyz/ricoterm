@@ -12,3 +12,16 @@ pub fn string_to_bytes32(input: &str) -> H256 {
     // Create H256 from the fixed-size array
     H256::from(fixed_bytes)
 }
+
+pub fn bytes32_to_string(input: H256) -> String {
+    // Convert the H256 to a fixed-size array
+    let bytes: [u8; 32] = input.into();
+    // Convert the fixed-size array to a vector
+    let mut bytes_vec = bytes.to_vec();
+    // Remove trailing zeros
+    while let Some(0) = bytes_vec.last() {
+        bytes_vec.pop();
+    }
+    // Convert the vector to a string
+    String::from_utf8(bytes_vec).unwrap()
+}

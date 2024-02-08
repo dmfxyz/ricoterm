@@ -1,6 +1,12 @@
+use std::collections::HashMap;
+
 use chrono::NaiveDateTime;
-use ethers::types::{U256, U64};
-use ricolib::{ddso::vat::Ilk, math::units};
+use ethers::types::{H160, U256, U64};
+use ricolib::{
+    ddso::{events::NewPalm2, vat::Ilk},
+    math::units,
+    utils::bytes32_to_string,
+};
 use tui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -46,6 +52,7 @@ pub struct TermCanvas {
     pub left_main_panel: LeftMainPanel,
     pub right_main_pane: RightMainPanel,
     pub footer: Rect,
+    pub color_map: std::collections::HashMap<&'static str, Color>,
 }
 
 impl TermCanvas {
@@ -75,12 +82,19 @@ impl TermCanvas {
             ilk_view: _right_views[1],
         };
         let footer = _areas[1];
+
+        let color_map = HashMap::from([
+            ("weth", Color::Green),
+            ("usdc", Color::Blue),
+            (":uninft", Color::Magenta),
+        ]);
         Self {
             size,
             navbar,
             left_main_panel,
             right_main_pane,
             footer,
+            color_map,
         }
     }
 }
@@ -283,4 +297,48 @@ pub fn paint_pricing_screen(mar: U256, par: U256, xau: U256) -> Paragraph<'stati
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Green)),
     )
+}
+
+pub fn paint_newpalm2s(
+    palms: Vec<&NewPalm2>,
+    color_map: &std::collections::HashMap<&'static str, Color>,
+) -> Paragraph<'static> {
+    // assume already filtered
+    let units = units::new();
+    let text = palms
+        .iter()
+        .map(|log| {
+            Spans::from(vec![
+                Span::raw(format!(
+                    "{}  {}  ",
+                    log.block_number,
+                    bytes32_to_string(log.act)
+                )),
+                Span::styled(
+                    bytes32_to_string(log.ilk),
+                    Style::default().fg(color_map
+                        .get(bytes32_to_string(log.ilk).as_str())
+                        .unwrap_or(&Color::Reset)
+                        .to_owned()),
+                ), // Styled part
+                Span::raw(format!(
+                    "  {}  {:.6}\n",
+                    H160::from_slice(&log.usr.as_bytes()[..20]),
+                    log.val.as_u128() as f64 / units.WAD_F64
+                )),
+            ])
+        })
+        .collect::<Vec<Spans>>();
+    Paragraph::new(text)
+}
+
+pub fn paint_settings(config: &crate::config::TermConfig) -> Paragraph {
+    let text = format!(
+        "settings:\nrpc_url: {}\n refresh_freq: {} seconds \nwallet_address: {}\nilks: {}",
+        config.rpc.arb_rpc_url,
+        config.rpc.refresh_seconds,
+        config.urns.user_address,
+        config.urns.ilks.join(", ")
+    );
+    Paragraph::new(text)
 }

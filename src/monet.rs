@@ -3,7 +3,10 @@ use std::collections::HashMap;
 use chrono::NaiveDateTime;
 use ethers::types::{H160, U256, U64};
 use ricolib::{
-    ddso::{events::NewPalm2, vat::Ilk},
+    ddso::{
+        events::{NewPalm0, NewPalm2, Palms},
+        vat::Ilk,
+    },
     math::units,
     utils::bytes32_to_string,
 };
@@ -14,7 +17,7 @@ use tui::{
     widgets::{Block, Borders, Paragraph},
 };
 
-use crate::urn::UrnData;
+use crate::{config::TermConfig, urn::UrnData, ChainData, SelectedActiveView, State};
 
 pub struct RightMainPanel {
     pub market_view: Rect,
@@ -87,6 +90,9 @@ impl TermCanvas {
             ("weth", Color::Green),
             ("usdc", Color::Blue),
             (":uninft", Color::Magenta),
+            ("way", Color::Rgb(51, 204, 197)),
+            ("tau", Color::Rgb(245, 158, 66)),
+            ("par", Color::Rgb(29, 219, 156)),
         ]);
         Self {
             size,
@@ -299,12 +305,20 @@ pub fn paint_pricing_screen(mar: U256, par: U256, xau: U256) -> Paragraph<'stati
     )
 }
 
-pub fn paint_newpalm2s(
+pub fn paint_newpalm2s<'a>(
     palms: Vec<&NewPalm2>,
-    color_map: &std::collections::HashMap<&'static str, Color>,
-) -> Paragraph<'static> {
+    color_map: &'a std::collections::HashMap<&'a str, Color>,
+    last_block: U64,
+) -> Paragraph<'a> {
     // assume already filtered
     let units = units::new();
+    let header = Spans::from(vec![Span::styled(
+        format!("{} ...", last_block),
+        Style::default()
+            .add_modifier(Modifier::ITALIC)
+            .add_modifier(Modifier::SLOW_BLINK),
+    )]);
+
     let text = palms
         .iter()
         .map(|log| {
@@ -329,6 +343,96 @@ pub fn paint_newpalm2s(
             ])
         })
         .collect::<Vec<Spans>>();
+    // prepend header
+    let text = vec![header].into_iter().chain(text).collect::<Vec<Spans>>();
+    Paragraph::new(text)
+}
+
+pub fn paint_newpalm0s<'a>(
+    palms: Vec<&NewPalm0>,
+    color_map: &'a std::collections::HashMap<&'a str, Color>,
+    last_block: U64,
+) -> Paragraph<'a> {
+    let header = Spans::from(vec![Span::styled(
+        format!("{} ...", last_block),
+        Style::default()
+            .add_modifier(Modifier::ITALIC)
+            .add_modifier(Modifier::SLOW_BLINK),
+    )]);
+
+    let text = palms
+        .iter()
+        .map(|log| {
+            Spans::from(vec![
+                Span::raw(format!("{}    ", log.block_number,)),
+                Span::styled(
+                    format!(
+                        "{}    {}",
+                        bytes32_to_string(log.which),
+                        match bytes32_to_string(log.which).as_str() {
+                            "way" => {
+                                let units = units::new();
+                                format!(
+                                    "{:.6}%",
+                                    ((U256::from_big_endian(log.what.as_bytes()).as_u128() as f64
+                                        / units.RAY_F64)
+                                        .powf(units.BANKYEAR)
+                                        - 1.0)
+                                        * 100.0
+                                )
+                            }
+                            "tau" => {
+                                // Need to convert to H256 to epoch seconds and then represent as date string
+                                let tau256 = U256::from_big_endian(log.what.as_bytes());
+                                let time = chrono::NaiveDateTime::from_timestamp_opt(
+                                    tau256.as_u128() as i64,
+                                    0,
+                                )
+                                .unwrap();
+                                // Format to only show month/day hour/minute. E.g. 12/31 23:59
+                                time.format("%H:%M %b %d UTC").to_string()
+                            }
+                            "par" => {
+                                format!(
+                                    "{}",
+                                    U256::from_big_endian(log.what.as_bytes()).as_u128() as f64
+                                        / 10_u128.pow(27) as f64
+                                )
+                            }
+                            "debt" => {
+                                format!(
+                                    "{:.6}",
+                                    U256::from_big_endian(log.what.as_bytes()).as_u128() as f64
+                                        / 10_u128.pow(18) as f64
+                                )
+                            }
+                            "ceil" => {
+                                format!(
+                                    "{:.6}",
+                                    U256::from_big_endian(log.what.as_bytes()).as_u128() as f64
+                                        / 10_u128.pow(18) as f64
+                                )
+                            }
+                            "joy" => {
+                                format!(
+                                    "{:.6}",
+                                    U256::from_big_endian(log.what.as_bytes()).as_u128() as f64
+                                        / 10_u128.pow(18) as f64
+                                )
+                            }
+                            _ => log.what.to_string(),
+                        }
+                    ),
+                    Style::default().fg(color_map
+                        .get(bytes32_to_string(log.which).as_str())
+                        .unwrap_or(&Color::Reset)
+                        .to_owned()),
+                ),
+            ])
+        })
+        .collect::<Vec<Spans>>();
+    // prepend header
+    let text = vec![header].into_iter().chain(text).collect::<Vec<Spans>>();
     Paragraph::new(text)
 }
 
@@ -341,4 +445,89 @@ pub fn paint_settings(config: &crate::config::TermConfig) -> Paragraph {
         config.urns.ilks.join(", ")
     );
     Paragraph::new(text)
+}
+
+pub fn paint_active_view<'a>(
+    state: &State,
+    data: &'a ChainData,
+    color_map: &'a std::collections::HashMap<&'a str, Color>,
+    config: &'a TermConfig,
+) -> (Paragraph<'a>, &'a str) {
+    let (active_text, active_title) = match &state.selected_active_view {
+        SelectedActiveView::Settings => (paint_settings(config), "settings"),
+        SelectedActiveView::Ilk => {
+            if !state.active_ilk.is_empty() {
+                let all_ilk_data = &data.ilks;
+                // now, instead, iterate over all active ilks and append their data to the active view
+                let formatted_str = state
+                    .active_ilk
+                    .iter()
+                    .enumerate()
+                    .map(|(index, ilk)| {
+                        format!(
+                            "ilk: {}\n{}",
+                            ilk,
+                            match all_ilk_data.get(index) {
+                                Some(ilk) => {
+                                    paint_ilk(ilk, data.last_refreshed)
+                                }
+                                _ => "  Awaiting ilk data...".to_string(),
+                            }
+                        )
+                    })
+                    .collect::<Vec<String>>()
+                    .join("\n");
+                (Paragraph::new(formatted_str), "ilk_view")
+            } else {
+                (Paragraph::new("No active view".to_string()), "active_view")
+            }
+        }
+        SelectedActiveView::NewPalm2 => {
+            if !data.logs.is_empty() {
+                let filtered_logs = data
+                    .logs
+                    .iter() // also filter on that Palm type is NewPalm2
+                    .filter_map(|log| {
+                        if let Palms::NewPalm2(palm) = log {
+                            if state.active_ilk.contains(&bytes32_to_string(palm.ilk))
+                                || state.active_ilk.is_empty()
+                            {
+                                Some(palm)
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<&NewPalm2>>();
+                let logs_text = paint_newpalm2s(filtered_logs, color_map, data.block);
+                (logs_text, "frob/bail")
+            } else {
+                (Paragraph::new("Awaiting NewPalm2 event..."), "frob/bail")
+            }
+        }
+        SelectedActiveView::NewPalm0 => {
+            if !data.logs.is_empty() {
+                let filtered_logs = data
+                    .logs
+                    .iter() // also filter on that Palm type is NewPalm0
+                    .filter_map(|log| {
+                        if let Palms::NewPalm0(palm) = log {
+                            Some(palm)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<&NewPalm0>>();
+                let logs_text = paint_newpalm0s(filtered_logs, color_map, data.block);
+                (logs_text, "sys-events")
+            } else {
+                (Paragraph::new("Awaiting NewPalm0 event..."), "sys-events")
+            }
+        }
+        _ => (Paragraph::new("No active view"), "active_view"),
+    };
+
+    (active_text, active_title)
 }

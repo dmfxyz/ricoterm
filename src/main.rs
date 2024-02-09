@@ -11,7 +11,7 @@ use ethers::prelude::*;
 use ethers::types::U256;
 use ricolib::{
     ddso::{
-        events::{IntoNewPalm2Vec, NewPalm2, NEW_PALM_2_SIG},
+        events::{Palms, TryIntoPalms, NEW_PALM_0_SIG, NEW_PALM_2_SIG},
         feedbase::Feedbase,
         nfpm::NPFM,
         uniwrapper::UniWrapper,
@@ -19,7 +19,7 @@ use ricolib::{
         vox::*,
     },
     math::units,
-    utils::{bytes32_to_string, string_to_bytes32},
+    utils::string_to_bytes32,
     valuation::Valuer,
 };
 use std::{
@@ -111,12 +111,13 @@ async fn fetch_data<T: Middleware + Clone>(
     state: &Arc<Mutex<State>>,
 ) -> Result<ChainData, Box<dyn std::error::Error>> {
     let mut urn_data = Vec::<UrnData>::new();
-    let (urns, active_ilks, wallet_address, active_palm_2) = {
+    let (urns, active_ilks, wallet_address, active_view, active_palm_2) = {
         let state = state.lock().unwrap();
         (
             state.urns.clone(),
             state.active_ilk.clone(),
             state.user_address,
+            state.selected_active_view,
             state.active_new_palm_2,
         )
     };
@@ -166,12 +167,21 @@ async fn fetch_data<T: Middleware + Clone>(
             .as_bytes(),
     );
 
-    let mut logs = match active_palm_2 {
-        Some("art") => {
+    let mut logs = match active_view {
+        SelectedActiveView::NewPalm2 => {
             let filter = Filter::new()
                 .address(vec![world.vat.address])
                 .topic0(*NEW_PALM_2_SIG)
-                .topic1(string_to_bytes32("art"))
+                .topic1(string_to_bytes32(active_palm_2.unwrap_or("")))
+                .from_block(BlockNumber::Earliest)
+                .to_block(block);
+
+            provider.get_logs(&filter).await?
+        }
+        SelectedActiveView::NewPalm0 => {
+            let filter = Filter::new()
+                .address(vec![world.vat.address])
+                .topic0(*NEW_PALM_0_SIG)
                 .from_block(BlockNumber::Earliest)
                 .to_block(block);
 
@@ -194,7 +204,10 @@ async fn fetch_data<T: Middleware + Clone>(
         tau,
         how,
         xau,
-        logs: logs.into_new_palm2_vec(),
+        logs: logs
+            .into_iter()
+            .map(|log| log.try_into_palms().unwrap())
+            .collect(),
     })
 }
 
@@ -209,7 +222,7 @@ pub struct ChainData {
     pub tau: U256,
     pub how: U256,
     pub xau: U256,
-    pub logs: Vec<NewPalm2>,
+    pub logs: Vec<Palms>,
 }
 
 pub struct RicoWorld<T: Middleware + Clone> {
@@ -228,6 +241,62 @@ pub struct State {
     pub active_new_palm_2: Option<&'static str>,
     pub selected_menu_view: SelectedMenuView,
     pub selected_active_view: SelectedActiveView,
+    pub selected_market_view: SelectedMarketView,
+    pub menu_index: i32,
+}
+
+impl State {
+    pub fn handle_non_ilk_key_press(&mut self, keycode: &KeyCode) {
+        match keycode {
+            KeyCode::Char('s') => {
+                match self.selected_active_view {
+                    SelectedActiveView::Settings => {
+                        self.selected_active_view = SelectedActiveView::Clear;
+                    }
+                    _ => {
+                        self.selected_active_view = SelectedActiveView::Settings;
+                    }
+                };
+            }
+            KeyCode::Char('m') => {
+                match self.selected_menu_view {
+                    SelectedMenuView::Urn => {
+                        self.selected_menu_view = SelectedMenuView::Menu;
+                        self.menu_index = 0;
+                    }
+                    SelectedMenuView::Menu => {
+                        self.selected_menu_view = SelectedMenuView::Urn;
+                        self.menu_index = -1;
+                    }
+                    SelectedMenuView::Pricing => {
+                        self.selected_menu_view = SelectedMenuView::Urn;
+                        self.menu_index = -1;
+                    }
+                };
+            }
+            KeyCode::Char('f') => match self.selected_active_view {
+                SelectedActiveView::Clear => {
+                    self.selected_active_view = SelectedActiveView::NewPalm2;
+                    self.active_new_palm_2 = Some("art");
+                }
+                SelectedActiveView::NewPalm2 => {
+                    self.selected_active_view = SelectedActiveView::Clear;
+                    self.active_new_palm_2 = None;
+                }
+                _ => {}
+            },
+            KeyCode::Char('z') => match self.selected_active_view {
+                SelectedActiveView::Clear => {
+                    self.selected_active_view = SelectedActiveView::NewPalm0;
+                }
+                SelectedActiveView::Ilk => {
+                    self.selected_active_view = SelectedActiveView::Clear;
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+    }
 }
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -263,6 +332,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         active_new_palm_2: None,
         selected_menu_view: SelectedMenuView::Urn,
         selected_active_view: SelectedActiveView::Clear,
+        selected_market_view: SelectedMarketView::MarAndPar,
+        menu_index: -1,
     }));
 
     let mut empty_urn_vec = Vec::<UrnData>::new();
@@ -283,17 +354,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tau: U256::zero(),
         how: U256::zero(),
         xau: U256::zero(),
-        logs: Vec::<NewPalm2>::new(),
+        logs: Vec::<Palms>::new(),
     }));
 
     // Spawn background task for fetching data
     let provider_clone = provider.clone();
     let data_clone = data.clone();
     let state_clone = state.clone();
-    let mut setting_active: bool = false;
-    let mut menu_index: i32 = -1;
-    let mut selected_menu_view = SelectedMenuView::Urn;
-    let mut selected_market_view = SelectedMarketView::MarAndPar;
+    // let mut menu_index: i32 = -1;
+    // let mut selected_menu_view = SelectedMenuView::Urn;
+    // let mut selected_market_view = SelectedMarketView::MarAndPar;
     thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
@@ -330,7 +400,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let state = state.lock().unwrap();
             // Build mar/par view
 
-            let marpar_paragraph = match selected_market_view {
+            let marpar_paragraph = match state.selected_market_view {
                 SelectedMarketView::MarAndPar => monet::paint_marpar(
                     data.mar,
                     data.par,
@@ -347,10 +417,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             f.render_widget(marpar_paragraph, canvas.right_main_pane.market_view);
 
             // build and render widget for each urn in the main view
-            match selected_menu_view {
+            match state.selected_menu_view {
                 SelectedMenuView::Menu => {
                     let menu_paragraph =
-                        monet::paint_menu(vec!["pricing", "exit"], menu_index as usize);
+                        monet::paint_menu(vec!["pricing", "exit"], state.menu_index as usize);
                     canvas.left_main_panel.menu_view = Some(canvas.left_main_panel.base_view);
                     f.render_widget(menu_paragraph, canvas.left_main_panel.menu_view.unwrap());
                 }
@@ -381,56 +451,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     f.render_widget(pricing_paragraph, canvas.left_main_panel.menu_view.unwrap());
                 }
             }
-            let (active_text, active_title) = match &state.selected_active_view {
-                SelectedActiveView::Settings => (monet::paint_settings(&config), "settings"),
-                SelectedActiveView::Ilk => {
-                    if !state.active_ilk.is_empty() {
-                        let all_ilk_data = &data.ilks;
-                        // now, instead, iterate over all active ilks and append their data to the active view
-                        let formatted_str = state
-                            .active_ilk
-                            .iter()
-                            .enumerate()
-                            .map(|(index, ilk)| {
-                                format!(
-                                    "ilk: {}\n{}",
-                                    ilk,
-                                    match all_ilk_data.get(index) {
-                                        Some(ilk) => {
-                                            monet::paint_ilk(ilk, data.last_refreshed)
-                                        }
-                                        _ => "  Awaiting ilk data...".to_string(),
-                                    }
-                                )
-                            })
-                            .collect::<Vec<String>>()
-                            .join("\n");
-                        (Paragraph::new(formatted_str), "ilk_view")
-                    } else {
-                        (Paragraph::new("No active view".to_string()), "active_view")
-                    }
-                }
-                SelectedActiveView::NewPalm2 => {
-                    if !data.logs.is_empty() {
-                        let filtered_logs = data
-                            .logs
-                            .iter()
-                            .filter(|log| {
-                                !state.active_ilk.is_empty()
-                                    && state.active_ilk.contains(&bytes32_to_string(log.ilk))
-                                    || state.active_ilk.is_empty()
-                            })
-                            .collect::<Vec<&NewPalm2>>();
-
-                        let logs_text = monet::paint_newpalm2s(filtered_logs, &canvas.color_map);
-                        (logs_text, "frob/bail")
-                    } else {
-                        (Paragraph::new("Awaiting NewPalm2 event..."), "frob/bail")
-                    }
-                }
-                _ => (Paragraph::new("No active view"), "active_view"),
-            };
-
+            let (active_text, active_title) =
+                monet::paint_active_view(&state, &data, &canvas.color_map, &config);
             let active_view_paragraph = active_text.block(
                 Block::default()
                     .title(active_title)
@@ -488,86 +510,45 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             state.active_ilk.clear();
                             state.active_new_palm_2 = None;
                             data.lock().unwrap().ilks.clear();
-                            setting_active = false;
-                        }
-                        KeyCode::Char('s') => {
-                            let mut state = state.lock().unwrap();
-                            match state.selected_active_view {
-                                SelectedActiveView::Settings => {
-                                    state.selected_active_view = SelectedActiveView::Clear;
-                                }
-
-                                _ => {
-                                    state.selected_active_view = SelectedActiveView::Settings;
-                                }
-                            };
-                            setting_active = !setting_active;
                         }
                         KeyCode::Char('p') => {
                             let mut state = state.lock().unwrap();
                             state.active_ilk.pop();
                             data.lock().unwrap().ilks.pop();
                         }
-
-                        KeyCode::Char('m') => {
-                            match selected_menu_view {
-                                SelectedMenuView::Urn => {
-                                    selected_menu_view = SelectedMenuView::Menu;
-                                    menu_index = 0;
-                                }
-                                SelectedMenuView::Menu => {
-                                    selected_menu_view = SelectedMenuView::Urn;
-                                    menu_index = -1;
-                                }
-                                SelectedMenuView::Pricing => {
-                                    selected_menu_view = SelectedMenuView::Urn;
-                                    menu_index = -1;
-                                }
-                            };
-                        }
                         KeyCode::Char('\\') => {
-                            match selected_market_view {
+                            let mut state = state.lock().unwrap();
+                            match state.selected_market_view {
                                 SelectedMarketView::MarAndPar => {
-                                    selected_market_view = SelectedMarketView::DollarConversion;
+                                    state.selected_market_view =
+                                        SelectedMarketView::DollarConversion;
                                 }
                                 SelectedMarketView::DollarConversion => {
-                                    selected_market_view = SelectedMarketView::MarAndPar;
+                                    state.selected_market_view = SelectedMarketView::MarAndPar;
                                 }
                             };
-                        }
-
-                        KeyCode::Char('f') => {
-                            let mut state = state.lock().unwrap();
-                            match state.selected_active_view {
-                                SelectedActiveView::Clear => {
-                                    state.selected_active_view = SelectedActiveView::NewPalm2;
-                                    state.active_new_palm_2 = Some("art");
-                                }
-                                SelectedActiveView::NewPalm2 => {
-                                    state.selected_active_view = SelectedActiveView::Clear;
-                                    state.active_new_palm_2 = None;
-                                }
-                                _ => {}
-                            }
                         }
 
                         // capture down arrow key
                         KeyCode::Down => {
-                            if menu_index >= 0 {
-                                menu_index += 1;
+                            let mut state = state.lock().unwrap();
+                            if state.menu_index >= 0 {
+                                state.menu_index += 1;
                             }
                         }
                         // capture up arrow key
                         KeyCode::Up => {
-                            if menu_index >= 1 {
-                                menu_index -= 1;
+                            let mut state = state.lock().unwrap();
+                            if state.menu_index >= 1 {
+                                state.menu_index -= 1;
                             }
                         }
                         KeyCode::Enter => {
-                            if let SelectedMenuView::Menu = selected_menu_view {
-                                match menu_index {
+                            let mut state = state.lock().unwrap();
+                            if let SelectedMenuView::Menu = state.selected_menu_view {
+                                match state.menu_index {
                                     0 => {
-                                        selected_menu_view = SelectedMenuView::Pricing;
+                                        state.selected_menu_view = SelectedMenuView::Pricing;
                                     }
                                     1 => {
                                         break;
@@ -576,7 +557,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                             }
                         }
-                        _ => {}
+                        _ => {
+                            let mut state = state.lock().unwrap();
+                            state.handle_non_ilk_key_press(&key.code);
+                        }
                     },
                 }
             }
@@ -605,10 +589,11 @@ pub enum SelectedMarketView {
     DollarConversion,
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Clone, Copy)]
 pub enum SelectedActiveView {
     Ilk,
     Settings,
+    NewPalm0,
     NewPalm2,
     Clear,
 }

@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use crate::utils::string_to_bytes32;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Ilk {
     pub tart: U256,
     pub rack: U256,

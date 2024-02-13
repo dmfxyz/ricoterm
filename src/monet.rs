@@ -390,7 +390,7 @@ pub fn paint_newpalm0s<'a>(
                                 )
                                 .unwrap();
                                 // Format to only show month/day hour/minute. E.g. 12/31 23:59
-                                time.format("%H:%M %b %d UTC").to_string()
+                                time.format("%H:%M %b %d").to_string()
                             }
                             "par" => {
                                 format!(

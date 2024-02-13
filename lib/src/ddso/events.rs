@@ -8,6 +8,7 @@ lazy_static::lazy_static ! {
     pub static ref NEW_PALM_0_SIG: H256 = H256::from(keccak256("NewPalm0(bytes32,bytes32)"));
 }
 
+#[derive(Clone)]
 pub struct NewPalm2 {
     pub block_number: U64,
     pub act: H256,
@@ -36,6 +37,7 @@ impl IntoNewPalm2Vec for Vec<Log> {
     }
 }
 
+#[derive(Clone)]
 pub struct NewPalm0 {
     pub block_number: U64,
     pub which: H256,
@@ -60,6 +62,7 @@ impl IntoNewPalm0Vec for Vec<Log> {
     }
 }
 
+#[derive(Clone)]
 pub enum Palms {
     NewPalm0(NewPalm0),
     NewPalm2(NewPalm2),

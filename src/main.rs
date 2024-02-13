@@ -211,6 +211,7 @@ async fn fetch_data<T: Middleware + Clone>(
     })
 }
 
+#[derive(Clone)]
 pub struct ChainData {
     pub urn_data: Vec<UrnData>,
     pub par: U256,
@@ -234,6 +235,7 @@ pub struct RicoWorld<T: Middleware + Clone> {
     chainlink_address: Address,
 }
 
+#[derive(Clone)]
 pub struct State {
     pub active_ilk: Vec<String>,
     pub urns: Vec<String>,
@@ -396,9 +398,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .style(Style::default().add_modifier(Modifier::BOLD));
             f.render_widget(title, canvas.navbar);
             // Grab data from the data mutex and start populating
-            let data = data.lock().unwrap();
-            let state = state.lock().unwrap();
-            // Build mar/par view
+            let state = {
+                state.lock().unwrap().clone()
+            };
+            let data = {
+                data.lock().unwrap().clone()
+            };
 
             let marpar_paragraph = match state.selected_market_view {
                 SelectedMarketView::MarAndPar => monet::paint_marpar(
@@ -578,12 +583,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+#[derive(Clone)]
 pub enum SelectedMenuView {
     Urn,
     Menu,
     Pricing,
 }
 
+#[derive(Clone)]
 pub enum SelectedMarketView {
     MarAndPar,
     DollarConversion,

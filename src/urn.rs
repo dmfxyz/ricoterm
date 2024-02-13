@@ -2,7 +2,7 @@ use std::default;
 
 use ethers::types::U256;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct UrnData {
     pub ink_name: String,
     pub ink: U256,

@@ -439,7 +439,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .collect::<Vec<Constraint>>();
                     let urn_views = Layout::default()
                         .direction(Direction::Vertical)
-                        .constraints(urn_display_constraints.as_ref())
+                        .constraints(urn_display_constraints)
                         .split(canvas.left_main_panel.base_view);
                     canvas.left_main_panel.set_urn_view(urn_views);
                     let urn_views = &canvas.left_main_panel.urn_view.unwrap();

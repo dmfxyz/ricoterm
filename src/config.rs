@@ -35,6 +35,7 @@ pub struct Rico {
     pub npfm: String,
     pub uniwrapper: String,
     pub chain_link_feed: String,
+    pub erc20hook: String,
 }
 
 pub fn read_config<T: AsRef<Path>>(path: T) -> Result<TermConfig, Box<dyn std::error::Error>> {

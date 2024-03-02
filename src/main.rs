@@ -398,6 +398,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     loop {
         // Draw UI
         terminal.draw(|f| {
+            let state = { state.lock().unwrap().clone() };
+            let data = { data.lock().unwrap().clone() };
             let size = f.size();
             let mut canvas = monet::TermCanvas::init(size);
             // Populate top section with title
@@ -408,8 +410,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .style(Style::default().add_modifier(Modifier::BOLD));
             f.render_widget(title, canvas.navbar);
             // Grab data from the data mutex and start populating
-            let state = { state.lock().unwrap().clone() };
-            let data = { data.lock().unwrap().clone() };
 
             let marpar_paragraph = match state.selected_market_view {
                 SelectedMarketView::MarAndPar => monet::paint_marpar(

@@ -8,11 +8,11 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ethers::prelude::*;
-use ethers::types::U256;
 use ricolib::{
     ddso::{
         events::{Palms, TryIntoPalms, NEW_PALM_0_SIG, NEW_PALM_2_SIG},
         feedbase::Feedbase,
+        gem::Gem,
         nfpm::NPFM,
         uniwrapper::UniWrapper,
         vat::*,
@@ -24,10 +24,8 @@ use ricolib::{
 };
 use std::{
     collections::HashMap,
-    convert::TryFrom,
     io,
-    sync::mpsc,
-    sync::{Arc, Mutex},
+    sync::{mpsc, Arc, Mutex},
     thread,
 };
 use tui::{
@@ -57,7 +55,7 @@ async fn fetch_all_urn_data_for_ilk<T: Middleware + Clone>(
         false => vat
             .ink(ilk, wallet_address)
             .await
-            .get(0)
+            .first()
             .unwrap()
             .to_owned(),
         true => {
@@ -152,7 +150,23 @@ async fn fetch_data<T: Middleware + Clone>(
 
     let mut ilk_data = Vec::<Ilk>::new();
     for ilk in active_ilks.iter() {
-        let ilk_info = world.vat.ilks(ilk.as_str()).await;
+        let mut ilk_info = world.vat.ilks(ilk.as_str()).await;
+        if ilk == ":uninft" {
+            ilk_data.push(ilk_info);
+            continue;
+        }
+        let gem = Gem::new(
+            &provider,
+            H160::from_slice(
+                &world
+                    .vat
+                    .geth::<H256>(ilk.as_str(), "gem", Vec::new())
+                    .await
+                    .as_bytes()[..20],
+            ),
+        );
+        ilk_info.tink = Some(gem.balance_of(world.vat.address).await);
+        ilk_info.inkd = Some(gem.decimals().await);
         ilk_data.push(ilk_info);
     }
     let way = world.vox.way().await;
@@ -388,6 +402,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     loop {
         // Draw UI
         terminal.draw(|f| {
+            let state = { state.lock().unwrap().clone() };
+            let data = { data.lock().unwrap().clone() };
             let size = f.size();
             let mut canvas = monet::TermCanvas::init(size);
             // Populate top section with title
@@ -398,12 +414,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .style(Style::default().add_modifier(Modifier::BOLD));
             f.render_widget(title, canvas.navbar);
             // Grab data from the data mutex and start populating
-            let state = {
-                state.lock().unwrap().clone()
-            };
-            let data = {
-                data.lock().unwrap().clone()
-            };
 
             let marpar_paragraph = match state.selected_market_view {
                 SelectedMarketView::MarAndPar => monet::paint_marpar(

@@ -112,14 +112,14 @@ pub fn paint_urn(urn: &UrnData, is_active: bool) -> Paragraph {
             .map(|x| x.to_string())
             .collect::<Vec<String>>()
             .join(", "),
-        None => format!(
-            "{}",
-            urn.ink.low_u64() as f64
-                / match urn.ink_name.as_str() {
-                    "usdc" => 10_u64.pow(6) as f64,
-                    _ => 10_u64.pow(18) as f64,
-                }
-        ),
+        None => ethers::utils::format_units(
+            urn.ink,
+            match urn.ink_name.as_str() {
+                "usdc" => 6,
+                _ => 18,
+            },
+        )
+        .unwrap(),
     };
     let urn_text = format!(
         "art:   {}\ndebt:  {}\n\tink:   {} \nloan/value: {:.12} / {:.12} --> safety: {:.5}",
@@ -153,12 +153,16 @@ pub fn paint_ilk<T: From<String>>(ilk: &Ilk, current_time: NaiveDateTime) -> T {
         time_since_update.num_seconds() % 60
     );
     format!(
-        "  tart: {}\n  rack: {}\n  rho: {} UTC ({} hours ago)\n  dust: {}\n  fee: {}%",
+        "  tart: {}\n  tink: {}\n  rack: {}\n  rho: {} UTC ({} hours ago)\n fee: {}%",
         (((ilk.tart * units.BLN) / units.WAD).as_u128() as f64 / units.BLN_F64),
+        ethers::utils::format_units(
+            ilk.tink.unwrap_or(U256::zero()),
+            ilk.inkd.unwrap_or(U256::zero()).as_u64() as u32
+        )
+        .unwrap(),
         (((ilk.rack * units.BLN) / units.RAY).as_u128() as f64 / units.BLN_F64),
         NaiveDateTime::from_timestamp_opt(ilk.rho.as_u128() as i64, 0).unwrap(),
         time_since_update_string,
-        (((ilk.dust * units.BLN) / units.RAD).as_u128() as f64 / units.BLN_F64),
         (((ilk.fee * units.WAD) / units.RAY).as_u128() as f64 / units.BLN_F64.powf(2.0) - 1_f64)
             * units.BANKYEAR
             * 100.0

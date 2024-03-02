@@ -1,4 +1,4 @@
-use ethers::{abi::{Abi, ParamType, Token}, contract::Contract, prelude::*, types::Address};
+use ethers::{abi::{Abi, ParamType, Token}, prelude::*};
 use serde_json::from_str;
 use std::sync::Arc;
 
@@ -14,6 +14,8 @@ pub struct Ilk {
     pub rho: U256,
     pub chop: U256,
     pub hook: Address,
+    pub tink: Option<U256>,
+    pub inkd: Option<U256>,
 }
 impl From<(U256, U256, U256, U256, U256, U256, U256, Address)> for Ilk {
     fn from(data: (U256, U256, U256, U256, U256, U256, U256, Address)) -> Self {
@@ -26,6 +28,8 @@ impl From<(U256, U256, U256, U256, U256, U256, U256, Address)> for Ilk {
             rho: data.5,
             chop: data.6,
             hook: data.7,
+            tink: None,
+            inkd: None,
         }
     }
 }

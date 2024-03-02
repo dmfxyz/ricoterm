@@ -151,6 +151,10 @@ async fn fetch_data<T: Middleware + Clone>(
     let mut ilk_data = Vec::<Ilk>::new();
     for ilk in active_ilks.iter() {
         let mut ilk_info = world.vat.ilks(ilk.as_str()).await;
+        if ilk == ":uninft" {
+            ilk_data.push(ilk_info);
+            continue;
+        }
         let gem = Gem::new(
             &provider,
             H160::from_slice(
